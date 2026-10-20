@@ -25,11 +25,10 @@ Titanic 是 Kaggle 公认的入门竞赛（[链接](https://www.kaggle.com/compe
 
 ## 结果
 
-- 最佳模型（梯度提升树）5 折交叉验证准确率：**82.1% (±1.3%)**
-- Logistic 回归测试集 AUC：0.858；三模型对比详见 `outputs/model_comparison.csv`
-- 关键发现：性别是存活率最强预测因子（女性存活率 74% vs 男性 19%），舱位等级次之
-
-> 注：当前使用斯坦福公开版数据（887 条）完成全流程验证；接入 Kaggle 官方数据（891 训练 + 418 测试）后可提交排行榜。
+- 最佳模型（梯度提升树）5 折交叉验证准确率：**83.95% (±2.47%)**，AUC **0.884**
+- 四模型对比（CV 准确率）：梯度提升树 83.95% > 支持向量机 83.39% > 随机森林 81.93% > Logistic 回归 80.02%
+- 关键发现：性别是存活率最强预测因子（女性 74% vs 男性 19%），舱位等级次之
+- 详细方法与数据字典见 [`docs/methodology.md`](docs/methodology.md)
 
 ## 技术栈
 
@@ -39,10 +38,11 @@ Titanic 是 Kaggle 公认的入门竞赛（[链接](https://www.kaggle.com/compe
 
 ```
 kaggle-titanic/
-├── data/            # 训练/测试数据（不提交，见 .gitignore）
+├── data/            # 原始数据（不提交，见 .gitignore）
 ├── notebooks/       # 探索性分析与建模（Jupyter）
-├── src/             # 可复用脚本（数据清洗、建模函数）
-├── outputs/         # 生成的图表与预测结果
+├── src/             # 可复用脚本（数据清洗、建模函数、完整流程）
+├── docs/            # 数据处理与建模方法说明
+├── outputs/         # 成果：提交文件、处理后数据、模型对比、图表
 ├── README.md
 ├── requirements.txt
 └── .gitignore
@@ -52,7 +52,7 @@ kaggle-titanic/
 
 ```bash
 pip install -r requirements.txt
-jupyter notebook notebooks/
+python src/run_full_pipeline.py   # 一键跑通全流程
 ```
 
 ## 作者

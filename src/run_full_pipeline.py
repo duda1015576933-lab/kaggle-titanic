@@ -1,125 +1,219 @@
 # -*- coding: utf-8 -*-
-"""Titanic 存活预测 —— 完整建模流程（适配斯坦福版数据）。
+"""Titanic 存活预测 —— 官方数据完整建模流程。
 
-数据列：Survived, Pclass, Name, Sex, Age, Siblings/Spouses Aboard,
-        Parents/Children Aboard, Fare
+数据：Kaggle 官方 train.csv（891 条）/ test.csv（418 条）
+流程：数据概览 → 缺失值处理 → 特征工程 → 多模型训练与交叉验证
+     → 生成提交文件 → 导出处理后数据
 
-与 Kaggle 官方数据的差异：无 Embarked / PassengerId / Ticket / Cabin 列，
-列名 Siblings/Spouses Aboard 等价于 SibSp，Parents/Children Aboard 等价于 Parch。
+运行：python src/run_full_pipeline.py
 """
 import os
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # 无界面环境，输出图片文件
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_auc_score
 
 sns.set_style("whitegrid")
-# 中文字体配置（Windows 自带微软雅黑/黑体）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
 BASE = r"C:/Users/10155/WorkBuddy/实习/kaggle-titanic"
-DATA = os.path.join(BASE, "data", "train.csv")
-OUT = os.path.join(BASE, "outputs")
-os.makedirs(OUT, exist_ok=True)
+DATA_DIR = os.path.join(BASE, "data")
+OUT_DIR = os.path.join(BASE, "outputs")
+os.makedirs(OUT_DIR, exist_ok=True)
 
-# ---------- 1. 加载数据 ----------
-df = pd.read_csv(DATA)
-print("数据形状:", df.shape)
-print("列名:", list(df.columns))
-print("缺失值统计:\n", df.isnull().sum()[df.isnull().sum() > 0])
+SEED = 42
 
-# ---------- 2. 重命名列以对齐标准命名 ----------
-df = df.rename(columns={
-    "Siblings/Spouses Aboard": "SibSp",
-    "Parents/Children Aboard": "Parch",
-})
-# 统一性别为数值
-df["Sex"] = df["Sex"].map({"male": 0, "female": 1})
 
-# ---------- 3. 特征工程 ----------
-df["FamilySize"] = df["SibSp"] + df["Parch"] + 1
-df["IsAlone"] = (df["FamilySize"] == 1).astype(int)
-# 从姓名提取称谓
-df["Title"] = df["Name"].str.extract(r" ([A-Za-z]+)\.", expand=False)
-rare = ["Lady", "Countess", "Capt", "Col", "Don", "Dr",
-        "Major", "Rev", "Sir", "Jonkheer", "Dona"]
-df["Title"] = df["Title"].replace(rare, "Rare")
-df["Title"] = df["Title"].replace({"Mlle": "Miss", "Ms": "Miss", "Mme": "Mrs"})
-df["Title"] = df["Title"].astype("category").cat.codes
+# ============================================================
+# 1. 数据加载与概览
+# ============================================================
+def load_data():
+    train = pd.read_csv(os.path.join(DATA_DIR, "train.csv"))
+    test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
+    return train, test
 
-# 年龄缺失填补（整体中位数）
-df["Age"] = df["Age"].fillna(df["Age"].median())
 
-feature_cols = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare",
-                "FamilySize", "IsAlone", "Title"]
-X = df[feature_cols]
-y = df["Survived"]
+def overview(train):
+    print("=" * 55)
+    print("数据概览")
+    print("=" * 55)
+    print(f"训练集形状: {train.shape}")
+    print(f"目标变量分布:\n{train['Survived'].value_counts().to_string()}")
+    mis = train.isnull().sum()
+    mis = mis[mis > 0]
+    print(f"\n缺失值:\n{mis.to_string()}")
 
-# ---------- 4. 切分训练/测试 ----------
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-print(f"\n训练集 {X_train.shape[0]} 条，测试集 {X_test.shape[0]} 条")
 
-# ---------- 5. 训练多个模型并对比 ----------
-models = {
-    "Logistic 回归": LogisticRegression(max_iter=1000, random_state=42),
-    "随机森林": RandomForestClassifier(n_estimators=200, random_state=42),
-    "梯度提升树": GradientBoostingClassifier(random_state=42),
-}
+# ============================================================
+# 2. 数据清洗与特征工程（train / test 统一处理）
+# ============================================================
+def preprocess(df):
+    """缺失值处理 + 特征工程。返回处理后的 DataFrame。"""
+    df = df.copy()
 
-results = []
-for name, model in models.items():
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
-    cv = cross_val_score(model, X, y, cv=5, scoring="accuracy")
-    results.append((name, acc, auc, cv.mean(), cv.std()))
-    print(f"\n=== {name} ===")
-    print(f"测试集准确率: {acc:.4f}")
-    print(f"测试集 AUC:   {auc:.4f}")
-    print(f"5 折交叉验证准确率: {cv.mean():.4f} (±{cv.std():.4f})")
-    print("混淆矩阵:\n", confusion_matrix(y_test, y_pred))
-    print("分类报告:\n", classification_report(y_test, y_pred))
+    # --- 缺失值处理 ---
+    # Age：按「性别 + 舱位等级」分组中位数填补（比整体中位数更精细）
+    df["Age"] = df.groupby(["Sex", "Pclass"])["Age"].transform(
+        lambda x: x.fillna(x.median())
+    )
+    # Embarked：用众数填补
+    df["Embarked"] = df["Embarked"].fillna(df["Embarked"].mode()[0])
+    # Fare：中位数填补
+    df["Fare"] = df["Fare"].fillna(df["Fare"].median())
+    # Cabin：缺失率高达 77%，不直接填补，而是提取两个新特征
+    df["HasCabin"] = df["Cabin"].notna().astype(int)
+    df["Deck"] = df["Cabin"].str[0].fillna("U")  # 首字母 = 甲板层，U 表示未知
+    df = df.drop(columns=["Cabin", "Ticket"])  # 丢弃原始 Cabin/Ticket
 
-# ---------- 6. 汇总对比表 ----------
-res_df = pd.DataFrame(results, columns=["模型", "测试准确率", "测试AUC", "CV均值", "CV标准差"])
-res_df = res_df.sort_values("测试准确率", ascending=False).reset_index(drop=True)
-print("\n===== 模型对比 =====")
-print(res_df.to_string(index=False))
-res_df.to_csv(os.path.join(OUT, "model_comparison.csv"), index=False, encoding="utf-8-sig")
+    # --- 特征工程 ---
+    df["FamilySize"] = df["SibSp"] + df["Parch"] + 1
+    df["IsAlone"] = (df["FamilySize"] == 1).astype(int)
+    # 从姓名提取称谓
+    df["Title"] = df["Name"].str.extract(r" ([A-Za-z]+)\.", expand=False)
+    rare_titles = ["Lady", "Countess", "Capt", "Col", "Don", "Dr",
+                   "Major", "Rev", "Sir", "Jonkheer", "Dona"]
+    df["Title"] = df["Title"].replace(rare_titles, "Rare")
+    df["Title"] = df["Title"].replace({"Mlle": "Miss", "Ms": "Miss", "Mme": "Mrs"})
+    df = df.drop(columns=["Name"])
 
-# ---------- 7. 可视化：特征重要性与存活率 ----------
-best_name = res_df.iloc[0]["模型"]
-best_model = models[best_name]
+    # 类别变量数值编码
+    df["Sex"] = df["Sex"].map({"male": 0, "female": 1})
+    df["Embarked"] = df["Embarked"].map({"S": 0, "C": 1, "Q": 2})
+    df["Deck"] = df["Deck"].astype("category").cat.codes
+    df["Title"] = df["Title"].astype("category").cat.codes
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    return df
 
-# 特征重要性（若为树模型）
-if hasattr(best_model, "feature_importances_"):
-    imp = pd.Series(best_model.feature_importances_, index=feature_cols).sort_values()
-    imp.plot(kind="barh", ax=axes[0], color="#185FA5")
-    axes[0].set_title(f"{best_name} 特征重要性")
-else:
-    coef = pd.Series(best_model.coef_[0], index=feature_cols).sort_values()
-    coef.plot(kind="barh", ax=axes[0], color="#185FA5")
-    axes[0].set_title(f"{best_name} 系数")
 
-# 性别与舱位对存活率的影响
-sns.barplot(x="Sex", y="Survived", data=df, ax=axes[1], palette="Blues")
-axes[1].set_xticklabels(["男性", "女性"])
-axes[1].set_title("性别与存活率")
+FEATURES = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked",
+            "FamilySize", "IsAlone", "Title", "HasCabin", "Deck"]
 
-plt.tight_layout()
-fig.savefig(os.path.join(OUT, "feature_analysis.png"), dpi=120)
-print(f"\n图表已保存: {os.path.join(OUT, 'feature_analysis.png')}")
 
-print("\n===== 流程完成 =====")
+# ============================================================
+# 3. 模型训练与评估
+# ============================================================
+def build_models():
+    return {
+        "Logistic 回归": LogisticRegression(max_iter=1000, random_state=SEED),
+        "支持向量机": make_pipeline(
+            StandardScaler(),
+            CalibratedClassifierCV(SVC(random_state=SEED), cv=3),
+        ),
+        "随机森林": RandomForestClassifier(n_estimators=300, random_state=SEED),
+        "梯度提升树": GradientBoostingClassifier(random_state=SEED),
+    }
+
+
+def evaluate_all(models, X, y):
+    """用 5 折分层交叉验证评估所有模型，返回结果表。"""
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+    rows = []
+    for name, model in models.items():
+        cv_acc = cross_val_score(model, X, y, cv=skf, scoring="accuracy")
+        cv_auc = cross_val_score(model, X, y, cv=skf, scoring="roc_auc")
+        rows.append({
+            "模型": name,
+            "CV准确率均值": round(cv_acc.mean(), 4),
+            "CV准确率标准差": round(cv_acc.std(), 4),
+            "CV-AUC均值": round(cv_auc.mean(), 4),
+        })
+    return pd.DataFrame(rows).sort_values("CV准确率均值", ascending=False).reset_index(drop=True)
+
+
+# ============================================================
+# 主流程
+# ============================================================
+def main():
+    train, test = load_data()
+    overview(train)
+
+    # 预处理（训练集保留 Survived 与 PassengerId）
+    train_id = train["PassengerId"]
+    test_id = test["PassengerId"]
+    train_pp = preprocess(train)
+    test_pp = preprocess(test)
+
+    X = train_pp[FEATURES]
+    y = train_pp["Survived"]
+
+    print("\n" + "=" * 55)
+    print("特征矩阵")
+    print("=" * 55)
+    print(f"特征数量: {len(FEATURES)}")
+    print(f"特征列表: {FEATURES}")
+
+    # 训练并评估
+    models = build_models()
+    result_df = evaluate_all(models, X, y)
+    print("\n" + "=" * 55)
+    print("模型交叉验证对比（5 折分层）")
+    print("=" * 55)
+    print(result_df.to_string(index=False))
+    result_df.to_csv(os.path.join(OUT_DIR, "model_comparison.csv"),
+                     index=False, encoding="utf-8-sig")
+
+    # 用 CV 最优模型生成提交文件
+    best_name = result_df.iloc[0]["模型"]
+    best_model = models[best_name]
+    best_model.fit(X, y)
+    test_pred = best_model.predict(test_pp[FEATURES])
+
+    submission = pd.DataFrame({
+        "PassengerId": test_id,
+        "Survived": test_pred,
+    })
+    submission_path = os.path.join(OUT_DIR, "submission.csv")
+    submission.to_csv(submission_path, index=False)
+    print(f"\n最优模型: {best_name}")
+    print(f"提交文件已生成: {submission_path}（{len(submission)} 条预测）")
+    print(f"预测存活人数占比: {submission['Survived'].mean():.1%}")
+
+    # 导出处理后的数据
+    train_out = pd.concat([train_id, train_pp], axis=1)
+    test_out = pd.concat([test_id, test_pp], axis=1)
+    train_out.to_csv(os.path.join(OUT_DIR, "train_processed.csv"),
+                     index=False, encoding="utf-8-sig")
+    test_out.to_csv(os.path.join(OUT_DIR, "test_processed.csv"),
+                    index=False, encoding="utf-8-sig")
+    print("处理后数据已导出: train_processed.csv / test_processed.csv")
+
+    # 可视化：特征重要性 + 关键特征与存活率
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 特征重要性（取梯度提升树）
+    imp_model = models["梯度提升树"]
+    imp_model.fit(X, y)
+    imp = pd.Series(imp_model.feature_importances_, index=FEATURES).sort_values()
+    imp.plot(kind="barh", ax=axes[0, 0], color="#185FA5")
+    axes[0, 0].set_title("特征重要性（梯度提升树）")
+
+    sns.barplot(x="Sex", y="Survived", data=train_pp, ax=axes[0, 1], color="#185FA5")
+    axes[0, 1].set_xticklabels(["男性", "女性"])
+    axes[0, 1].set_title("性别与存活率")
+
+    sns.barplot(x="Pclass", y="Survived", data=train_pp, ax=axes[1, 0], color="#185FA5")
+    axes[1, 0].set_title("舱位等级与存活率")
+
+    sns.barplot(x="Title", y="Survived", data=train_pp, ax=axes[1, 1], color="#185FA5")
+    axes[1, 1].set_title("称谓与存活率")
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "feature_analysis.png"), dpi=120)
+    print(f"图表已保存: {os.path.join(OUT_DIR, 'feature_analysis.png')}")
+
+    print("\n===== 全流程完成 =====")
+
+
+if __name__ == "__main__":
+    main()

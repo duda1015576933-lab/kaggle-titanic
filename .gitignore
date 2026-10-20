@@ -10,12 +10,13 @@ __pycache__/
 .venv/
 venv/
 
-# 输出与缓存
-outputs/*.csv
-outputs/*.png
+# 日志
 *.log
 
 # IDE
 .idea/
 .vscode/
 .DS_Store
+
+# 说明：outputs/ 目录下的成果文件（submission.csv、处理后数据、模型对比表、图表）
+# 均纳入版本管理，供面试官直接查看，故不在此忽略。
