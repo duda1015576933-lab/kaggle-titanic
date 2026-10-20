@@ -1,0 +1,21 @@
+# 数据文件（训练/测试集体积大，且可在 Kaggle 重新下载）
+data/*.csv
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 输出与缓存
+outputs/*.csv
+outputs/*.png
+*.log
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
